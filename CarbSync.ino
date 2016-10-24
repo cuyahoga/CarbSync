@@ -1,7 +1,8 @@
 /*********************************************************************
  *
- * Carbotron 4000
+ * CarbSync 4000
  *
+ * http://blog.cuyahoga.co.uk/carbsync
  *
  *********************************************************************/
 #include <SPI.h>
@@ -52,16 +53,16 @@ Adafruit_SSD1306 display(OLED_MOSI, OLED_CLK, OLED_DC, OLED_RESET, OLED_CS);
 
 // Potentiometers
 #define ADJUSTER_SECTORS 70
-#define ADJUSTER_OFFSET  35
 
 // ==========================
 // Display modes
 // ==========================
 #define MODE_SPLASH            0
-#define MODE_BALANCE           1
-#define MODE_UNIT_OF_MEASURE   2
-#define MODE_CALIBRATION       3
-#define MODE_COUNT             4
+#define MODE_MONITOR           1
+#define MODE_BALANCE           2
+#define MODE_UNIT_OF_MEASURE   3
+#define MODE_CALIBRATION       4
+#define MODE_COUNT             5
 
 // ==========================
 // Balance options
@@ -110,7 +111,7 @@ movingAvg mapSensorReadingsMv[MAP_SENSOR_COUNT] = {movingAvg(), movingAvg(), mov
 movingAvg mapSensorReadingsKPa[MAP_SENSOR_COUNT] = {movingAvg(), movingAvg(), movingAvg(), movingAvg()}; 
 Potentiometer adjusters[MAP_SENSOR_COUNT] = {Potentiometer(A4, ADJUSTER_SECTORS), Potentiometer(A5, ADJUSTER_SECTORS), Potentiometer(A6, ADJUSTER_SECTORS), Potentiometer(A7, ADJUSTER_SECTORS)};
 int adjusterReadings[MAP_SENSOR_COUNT];
-int atmosphericKPa = 0;
+byte atmosphericKPa = 0;
 
 
 void setup() {
@@ -136,11 +137,42 @@ void loop() {
 
 }
 
-void readAtmosphericPressure() {
-  
-   // Establish power specification and then set the baseline atmospheric pressure value
-  int vccMv = readVcc(VCC_ADJUSTMENT);
-  atmosphericKPa = convertReadingToKPa(analogRead(mapSensorPins[0]) + adjusterReadings[0], (float)vccMv / MAP_SENSOR_REFERENCE_MV, vccMv / 1023.0, MAP_SENSOR_MIN_MV, MAP_SENSOR_MAX_MV, MAP_SENSOR_MIN_KPA, MAP_SENSOR_MAX_KPA);
+// ===============================================================
+// Functions
+// ===============================================================
+
+int convertReadingToKPa(float reading, float vccOffset, float vccMvPerUnit, float inMinMv, float inMaxMv, int outMin, int outMax) {
+  /**
+   * Map the voltage reading from a sensor to a given value range, against a soure range compensated against supply voltage
+   *
+   * We know that the 10-bit ADC has a range of 1024 values, so when it is supplied with 5V that gives us 5000/1024 = 4.8828125 mV/ADC increment
+   * The in_min voltage represents out_min pressure and the in_max voltage represents out_max pressure
+   * We therefore map the supplied reading on the input scale and return its relative value on the output scale
+   *
+   * Worked example;
+   *  
+   * pressure = mapsensor(807, 250, 4650, 17, 117)
+   * pressure = map(807, round((250 / 4.8828125) - 1), round(4650 / 4.8828125) - 1), 17, 117)
+   * pressure = map(807, round(51.2 - 1), round(952.32 - 1), 17, 117)
+   * pressure = map(807, 50, 951, 17, 117)
+   * pressure = 101 kPa
+   */
+//  Serial.print("mapCurrentReading(");Serial.print(inMinMv);Serial.print(", ");Serial.print(inMaxMv);Serial.print(", ");Serial.print(outMin);Serial.print(", ");Serial.print(outMax);Serial.println(");");
+  return map(reading, round(((inMinMv * vccOffset) / vccMvPerUnit) - 1), round(((inMaxMv * vccOffset) / vccMvPerUnit) - 1), outMin, outMax);
+}
+
+float convertKPaToUom(int kpa) {
+  switch(uom) {
+    case UOM_HGIN:
+      Serial.print(atmosphericKPa); Serial.print("  "); Serial.print(kpa); Serial.print("  "); Serial.println((atmosphericKPa - kpa) * 0.295301);
+      return (atmosphericKPa - kpa) * 0.295301;
+      break;
+    case UOM_PSI:
+    return kpa * 0.145037738;
+      break;
+    default:
+      return kpa;
+  }
 }
 
 String formatReadingInUom(int source, bool appendUom) {
@@ -162,220 +194,14 @@ String formatReadingInUom(int source, bool appendUom) {
   return buf;
 }
 
+float getMvPerUnit(int vccMv) {
+  return vccMv / 1023.0;
+}
+
 String getUomDesc() {
   
   String desc[UOM_COUNT] = {"KPa", "HgIn", "PSI"};
   return desc[uom];
-}
-
-void readAdjusters() {
-    
-  int offset;
-  for (byte adjuster = 0; adjuster < MAP_SENSOR_COUNT; adjuster++) { 
-    adjusterReadings[adjuster] = ((adjusters[adjuster].getSector() - ADJUSTER_SECTORS) * -1) - ADJUSTER_OFFSET;
-  }
-  
-}
-void readMAPSensors() {
-  
-  //unsigned long time = millis();
-  
-  // Establish power specification
-  int vccMv = readVcc(VCC_ADJUSTMENT);
-  //Serial.print(F("VCC: ")); Serial.print(vccMv); Serial.println(F(" mV"));
-
-  int currentReading;
-  float mvPerUnit = vccMv / 1023.0;
-  float currentReadingMv;
-  float vccOffset = (float)vccMv / MAP_SENSOR_REFERENCE_MV;
-  float currentReadingKPa;
-
-  for (byte sensor = 0; sensor < MAP_SENSOR_COUNT; sensor++) { 
-    currentReading = analogRead(mapSensorPins[sensor]) + adjusterReadings[sensor];
-    currentReadingMv = currentReading * (mvPerUnit);
-    currentReadingKPa = convertReadingToKPa(currentReading, vccOffset, mvPerUnit, MAP_SENSOR_MIN_MV, MAP_SENSOR_MAX_MV, MAP_SENSOR_MIN_KPA, MAP_SENSOR_MAX_KPA);
-    
-    mapSensorReadings[sensor].reading(currentReading);
-    mapSensorReadingsMv[sensor].reading(currentReadingMv);
-    mapSensorReadingsKPa[sensor].reading(currentReadingKPa);
-    
-    //Serial.print(currentReading); Serial.print(F("  ")); Serial.print(currentReadingMv); Serial.println(F("mv"));
-  }
-  //Serial.print(F("Took: ")); Serial.println(millis() - time);
-}
-  
-void refreshDisplay() {
- 
-  display.clearDisplay();
-  display.setTextSize(1);
-  display.setTextColor(WHITE);
-  display.setCursor(0, 1);
-
-  switch (mode) {
-    case MODE_BALANCE:
-      refreshDisplayBalance();
-      break;
-    case MODE_UNIT_OF_MEASURE:
-      refreshDisplayUnitOfMeasure();
-      break;
-    case MODE_CALIBRATION:
-      refreshDisplayCalibration();
-      break;
-    default: 
-      refreshDisplaySplash();
-      break;
-  }
-  
-  display.display();
-}
-
-void refreshDisplaySplash() {
-  Serial.println(F("Splash"));
-  /*display.setTextColor(BLACK, WHITE);
-  display.print(F("       Splash        "));
-  display.setTextColor(WHITE);*/
-  
-  display.setTextSize(2);
-  display.setCursor(16, 0);
-  display.print(F("CarbSync"));
-  display.setTextSize(3);
-  display.setCursor(29, 25);
-  display.print(F("4000"));
-  display.setTextSize(1);
-  display.setCursor(8, 56);
-  display.print(F("blog.cuyahoga.co.uk"));
-}
-
-void refreshDisplayBalance() {
-  Serial.println(F("Balance"));
-  display.setTextColor(BLACK, WHITE);
-  display.print(F("       Balance       "));
-  display.setTextColor(WHITE);
-  display.setCursor(0, 17);
-  display.print(getUomDesc());
-  if (!balance == BALANCE_1234) {
-    display.setCursor(40, 17);
-    display.print(F("Ports "));
-    if (balance == BALANCE_12) {
-      display.print(F("1 & 2"));
-    } else {
-      display.print(F("3 & 4"));
-    }
-  }
-  display.setCursor(0, 25);
-  display.print(F("----"));
-  if (!balance == BALANCE_1234) {
-    display.setCursor(40, 25);
-    display.print(F("-----------"));
-  }
-  
-  // Determine the min, max and range of input values
-  int pLow = 1023;
-  int pHigh = 0;
-  int pRange = 0;
-  for (byte sensor = (balance == BALANCE_34 ? 2 : 0); sensor < (balance == BALANCE_12 ? 2 : MAP_SENSOR_COUNT); sensor++) 
-  {
-    pLow = min(pLow, mapSensorReadings[sensor].getAvg());
-    pHigh = max(pHigh, mapSensorReadings[sensor].getAvg());
-  }
-  pRange = pHigh - pLow;
-
-  // Display each of the values relative to the current range
-  int row = 0;
-  for (byte sensor = (balance == BALANCE_34 ? 2 : 0); sensor < (balance == BALANCE_12 ? 2 : MAP_SENSOR_COUNT); sensor++) {
-    renderGaugeRow(row++, mapSensorReadingsKPa[sensor].getAvg(), mapSensorReadings[sensor].getAvg(), pLow, pRange);
-  }
-}
-
-void refreshDisplayUnitOfMeasure() {
-  Serial.println(F("Unit Of Measure"));
-  display.setTextColor(BLACK, WHITE);
-  display.print(F("   Unit Of Measure   "));
-  display.setTextColor(WHITE);
-  
-  display.setCursor(20, 33);
-  display.setTextSize(4);
-  display.print(getUomDesc());  
-}
-
-void refreshDisplayCalibration() {
-  Serial.println(F("Calibration"));
-  display.setTextColor(BLACK, WHITE);
-  display.print(F("     Calibration     "));
-  display.setTextColor(WHITE);
-  display.setCursor(0, 17);
-  display.print(F("  Rdg  Off   Value"));
-  display.setCursor(0, 25);
-  display.print(F("  ---  ---   -----"));
-
-  byte row;
-  for (byte sensor = 0; sensor < MAP_SENSOR_COUNT; sensor++) {
-    // Map the row number to a Y co-ordinate
-    row = (sensor * 8) + 33;
-    display.setCursor(0, row);
-    display.print(sensor + 1);
-    display.setCursor(12, row);
-    display.print(mapSensorReadings[sensor].getAvg());
-    display.setCursor(43, row);
-    display.print(adjusterReadings[sensor]);
-    display.setCursor(78, row);
-    display.print(formatReadingInUom(mapSensorReadingsKPa[sensor].getAvg(), true));
-  }
-}
-
-void renderGaugeRow(byte row, int pressure, int val, int low, int range) {
-  
-  // Map the row number to a Y co-ordinate
-  row = (row * (balance == BALANCE_1234 ? 8 : 16)) + 33;
-  // Show the current value
-  display.setCursor(0, row);
-  if (!balance == BALANCE_1234) {
-    display.setTextSize(2);
-  }
-  display.print(formatReadingInUom(pressure, false));
-
-  // Scale the range
-  int scale = (range < 30 ? roundup(range, 10) : (range < 100 ? roundup(range, 25) : 100));
-  low -= ((scale - range) / 2);
-
-  // Show a slider representing the current value for the row
-  byte rel = (range < 3 ? 42 : map(val, low, low + scale, 0, (!balance == BALANCE_1234 && uom == UOM_PSI ? 64 : 84)));
-  display.fillRect(27 + (!balance == BALANCE_1234 && uom == UOM_PSI ? 20 : 0) + rel, row, 8, (balance == BALANCE_1234 ? 7 : 14), WHITE);
-  display.fillRect(27 + (!balance == BALANCE_1234 && uom == UOM_PSI ? 20 : 0) + rel + 10, row, 8, (balance == BALANCE_1234 ? 7 : 14), WHITE);
-}
-
-float convertKPaToUom(int kpa) {
-  switch(uom) {
-    case UOM_HGIN:
-      Serial.print(atmosphericKPa); Serial.print("  "); Serial.print(kpa); Serial.print("  "); Serial.println((atmosphericKPa - kpa) * 0.295301);
-      return (atmosphericKPa - kpa) * 0.295301;
-      break;
-    case UOM_PSI:
-    return kpa * 0.145037738;
-      break;
-    default:
-      return kpa;
-  }
-}
-
-int convertReadingToKPa(float reading, float vccOffset, float vccMvPerUnit, float inMinMv, float inMaxMv, int outMin, int outMax) {
-  /**
-   * Map the voltage reading from a sensor to a given value range, against a soure range compensated against supply voltage
-   *
-   * We know that the 10-bit ADC has a range of 1024 values, so when it is supplied with 5V that gives us 5000/1024 = 4.8828125 mV/ADC increment
-   * The in_min voltage represents out_min pressure and the in_max voltage represents out_max pressure
-   * We therefore map the supplied reading on the input scale and return its relative value on the output scale
-   *
-   * Worked example;
-   *  
-   * pressure = mapsensor(807, 250, 4650, 17, 117)
-   * pressure = map(807, round((250 / 4.8828125) - 1), round(4650 / 4.8828125) - 1), 17, 117)
-   * pressure = map(807, round(51.2 - 1), round(952.32 - 1), 17, 117)
-   * pressure = map(807, 50, 951, 17, 117)
-   * pressure = 101 kPa
-   */
-//  Serial.print("mapCurrentReading(");Serial.print(inMinMv);Serial.print(", ");Serial.print(inMaxMv);Serial.print(", ");Serial.print(outMin);Serial.print(", ");Serial.print(outMax);Serial.println(");");
-  return map(reading, round(((inMinMv * vccOffset) / vccMvPerUnit) - 1), round(((inMaxMv * vccOffset) / vccMvPerUnit) - 1), outMin, outMax);
 }
 
 void handleButtonAction() 
@@ -413,10 +239,217 @@ void handleButtonMode()
   {
     lastButtonModeDebounceTime = millis();
     if (++mode == MODE_COUNT) {
-      // Cycle back round to the balance mode
-      mode = MODE_BALANCE;
+      // Cycle back round to the Monitor mode
+      mode = MODE_MONITOR;
     }
   }  
+}
+
+void readAdjusters() {
+    
+  int offset;
+  for (byte adjuster = 0; adjuster < MAP_SENSOR_COUNT; adjuster++) { 
+    adjusterReadings[adjuster] = ((adjusters[adjuster].getSector() - ADJUSTER_SECTORS) * -1) - (ADJUSTER_SECTORS / 2);
+  }
+  
+}
+
+void readAtmosphericPressure() {
+  
+   // Establish power specification and then set the baseline atmospheric pressure value
+  int vccMv = readVcc(VCC_ADJUSTMENT);
+  atmosphericKPa = convertReadingToKPa(analogRead(mapSensorPins[0]) + adjusterReadings[0], (float)vccMv / MAP_SENSOR_REFERENCE_MV, vccMv / 1023.0, MAP_SENSOR_MIN_MV, MAP_SENSOR_MAX_MV, MAP_SENSOR_MIN_KPA, MAP_SENSOR_MAX_KPA);
+}
+
+void readMAPSensors() {
+  
+  //unsigned long time = millis();
+  
+  // Establish power specification
+  int vccMv = readVcc(VCC_ADJUSTMENT);
+  //Serial.print(F("VCC: ")); Serial.print(vccMv); Serial.println(F(" mV"));
+
+  int currentReading;
+  float currentReadingMv;
+  float vccOffset = (float)vccMv / MAP_SENSOR_REFERENCE_MV;
+  float currentReadingKPa;
+
+  for (byte sensor = 0; sensor < MAP_SENSOR_COUNT; sensor++) { 
+    currentReading = analogRead(mapSensorPins[sensor]) + adjusterReadings[sensor];
+    currentReadingMv = currentReading * (getMvPerUnit(vccMv));
+    currentReadingKPa = convertReadingToKPa(currentReading, vccOffset, getMvPerUnit(vccMv), MAP_SENSOR_MIN_MV, MAP_SENSOR_MAX_MV, MAP_SENSOR_MIN_KPA, MAP_SENSOR_MAX_KPA);
+    
+    mapSensorReadings[sensor].reading(currentReading);
+    mapSensorReadingsMv[sensor].reading(currentReadingMv);
+    mapSensorReadingsKPa[sensor].reading(currentReadingKPa);
+    
+    //Serial.print(currentReading); Serial.print(F("  ")); Serial.print(currentReadingMv); Serial.println(F("mv"));
+  }
+  //Serial.print(F("Took: ")); Serial.println(millis() - time);
+}
+  
+void refreshDisplay() {
+ 
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(WHITE);
+  display.setCursor(0, 1);
+
+  switch (mode) {
+    case MODE_MONITOR:
+      refreshDisplayMonitor();
+      break;
+    case MODE_BALANCE:
+      refreshDisplayBalance();
+      break;
+    case MODE_UNIT_OF_MEASURE:
+      refreshDisplayUnitOfMeasure();
+      break;
+    case MODE_CALIBRATION:
+      refreshDisplayCalibration();
+      break;
+    default: 
+      refreshDisplaySplash();
+      break;
+  }
+  
+  display.display();
+}
+
+void refreshDisplayBalance() {
+  Serial.println(F("Balance"));
+  display.setTextColor(BLACK, WHITE);
+  display.print(F("       Balance       "));
+  display.setTextColor(WHITE);
+  display.setCursor(0, 17);
+  display.print(getUomDesc());
+  if (!balance == BALANCE_1234) {
+    display.setCursor(40, 17);
+    display.print(F("Ports "));
+    if (balance == BALANCE_12) {
+      display.print(F("1 & 2"));
+    } else {
+      display.print(F("3 & 4"));
+    }
+  }
+  display.setCursor(0, 25);
+  display.print(F("----"));
+  if (!balance == BALANCE_1234) {
+    display.setCursor(40, 25);
+    display.print(F("-----------"));
+  }
+  
+  // Determine the min, max and range of input values
+  int pLow = 1023;
+  int pHigh = 0;
+  int pRange = 0;
+  for (byte sensor = (balance == BALANCE_34 ? 2 : 0); sensor < (balance == BALANCE_12 ? 2 : MAP_SENSOR_COUNT); sensor++) 
+  {
+    pLow = min(pLow, mapSensorReadings[sensor].getAvg());
+    pHigh = max(pHigh, mapSensorReadings[sensor].getAvg());
+  }
+  pRange = pHigh - pLow;
+
+  // Display each of the values relative to the current range
+  renderGauge(pLow, pRange);
+}
+
+void refreshDisplayCalibration() {
+  Serial.println(F("Calibration"));
+  display.setTextColor(BLACK, WHITE);
+  display.print(F("     Calibration     "));
+  display.setTextColor(WHITE);
+  display.setCursor(0, 17);
+  display.print(F("  Rdg  Off   Value"));
+  display.setCursor(0, 25);
+  display.print(F("  ---  ---   -----"));
+
+  byte row;
+  for (byte sensor = 0; sensor < MAP_SENSOR_COUNT; sensor++) {
+    // Map the row number to a Y co-ordinate
+    row = (sensor * 8) + 33;
+    display.setCursor(0, row);
+    display.print(sensor + 1);
+    display.setCursor(12, row);
+    display.print(mapSensorReadings[sensor].getAvg());
+    display.setCursor(43, row);
+    display.print(adjusterReadings[sensor]);
+    display.setCursor(78, row);
+    display.print(formatReadingInUom(mapSensorReadingsKPa[sensor].getAvg(), true));
+  }
+}
+
+void refreshDisplayMonitor() {
+  Serial.println(F("Monitor"));
+  display.setTextColor(BLACK, WHITE);
+  display.print(F("       Monitor       "));
+  display.setTextColor(WHITE);
+  display.setCursor(0, 17);
+  display.print(getUomDesc());
+  display.setCursor(0, 25);
+  display.print(F("----"));
+  
+  // Display each of the values relative to the full range of the sensor (plus/minus adjusters)
+  int vccMv = readVcc(VCC_ADJUSTMENT);
+  float offset = vccMv / MAP_SENSOR_REFERENCE_MV;
+  int low = (MAP_SENSOR_MIN_MV * offset) / getMvPerUnit(vccMv) - (ADJUSTER_SECTORS / 2);
+  renderGauge(low, (((MAP_SENSOR_MAX_MV * offset) / getMvPerUnit(vccMv)) + (ADJUSTER_SECTORS / 2)) - low);
+}
+
+void refreshDisplaySplash() {
+  Serial.println(F("Splash"));
+  
+  display.setTextSize(2);
+  display.setCursor(16, 0);
+  display.print(F("CarbSync"));
+  display.setTextSize(3);
+  display.setCursor(29, 25);
+  display.print(F("4000"));
+  display.setTextSize(1);
+  display.setCursor(8, 56);
+  display.print(F("blog.cuyahoga.co.uk"));
+}
+
+void refreshDisplayUnitOfMeasure() {
+  Serial.println(F("Unit Of Measure"));
+  display.setTextColor(BLACK, WHITE);
+  display.print(F("   Unit Of Measure   "));
+  display.setTextColor(WHITE);
+  
+  display.setCursor(20, 33);
+  display.setTextSize(4);
+  display.print(getUomDesc());  
+}
+
+void renderGauge(int pLow, int pRange) {
+  // Display each of the values relative to the current range
+  int row = 0;
+  for (byte sensor = (balance == BALANCE_34 ? 2 : 0); sensor < (balance == BALANCE_12 ? 2 : MAP_SENSOR_COUNT); sensor++) {
+    renderGaugeRow(row++, mapSensorReadingsKPa[sensor].getAvg(), mapSensorReadings[sensor].getAvg(), pLow, pRange);
+  }
+}
+
+void renderGaugeRow(byte row, int pressure, int val, int low, int range) {
+  
+  // Map the row number to a Y co-ordinate
+  row = (row * (balance == BALANCE_1234 ? 8 : 16)) + 33;
+  // Show the current value
+  display.setCursor(0, row);
+  if (!balance == BALANCE_1234) {
+    display.setTextSize(2);
+  }
+  display.print(formatReadingInUom(pressure, false));
+
+  // Scale the range
+  int scale = (range < 30 ? roundup(range, 10) : (range < 100 ? roundup(range, 25) : (range < 500 ? roundup(range, 100) : range)));
+  if (scale != range) {
+    low -= ((scale - range) / 2);
+  }
+
+  // Show a slider representing the current value for the row
+  byte rel = (range < 3 ? 42 : map(val, low, low + scale, 0, (!balance == BALANCE_1234 && uom == UOM_PSI ? 64 : 84)));
+  display.fillRect(27 + (!balance == BALANCE_1234 && uom == UOM_PSI ? 20 : 0) + rel, row, 8, (balance == BALANCE_1234 ? 7 : 14), WHITE);
+  display.fillRect(27 + (!balance == BALANCE_1234 && uom == UOM_PSI ? 20 : 0) + rel + 10, row, 8, (balance == BALANCE_1234 ? 7 : 14), WHITE);
 }
 
 int roundup(int numToRound, int multiple) 
