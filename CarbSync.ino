@@ -15,6 +15,7 @@ RunningAverage lcdRefreshRate(10);
 // ===============================================================
 // Adafruit ST7565 128x64 GLCD
 // ===============================================================
+/*
   #define SCREEN_ST7565
   #include "JeeLib.h"              // https://github.com/jcw/jeelib
   #include <GLCD_ST7565.h>         // https://github.com/cuyahoga/glcdlib
@@ -27,16 +28,13 @@ RunningAverage lcdRefreshRate(10);
   #define LCD_RED       0, 255, 255
   #define LCD_GREEN     255, 0, 255
   #define LCD_BLUE      255, 255, 0
+  #define LCD_ORANGE    0,  90, 255
   GLCD_ST7565           glcd;
-  // Backlight variables for PWM
-  uint8_t redLEDValue   = 255;
-  uint8_t greenLEDValue = 255;
-  uint8_t blueLEDValue  = 0;
-  
+*/  
 // ===============================================================
 // Adafruit SSD1306 128x32 OLED
 // ===============================================================
-/*
+
   #define SCREEN_SSD1306
   #include <Adafruit_GFX.h>        // https://github.com/adafruit/Adafruit-GFX-Library
   #include <Adafruit_SSD1306.h>    // https://github.com/adafruit/Adafruit_SSD1306
@@ -46,10 +44,12 @@ RunningAverage lcdRefreshRate(10);
   #define OLED_MOSI       9
   #define OLED_RESET      13
   Adafruit_SSD1306 display(OLED_MOSI, OLED_CLK, OLED_DC, OLED_RESET, OLED_CS);
-  #if (SSD1306_LCDHEIGHT != 32)
+  #if (SSD1306_LCDHEIGHT != 64)
   #error("Height incorrect, please fix Adafruit_SSD1306.h!");
   #endif
-*/
+
+  #define LCD_REFRESH   150
+
 
 Timer t;
 
@@ -72,7 +72,7 @@ char   buffer[10];
 void setup()   {                
   Serial.begin(9600);
 
-  int tickEvent = t.every(200, refreshGaugeDisplay);
+  int tickEvent = t.every(LCD_REFRESH, refreshGaugeDisplay);
     
 #if defined(SCREEN_SSD1306)
   // Set up the 128x32 OLED
@@ -96,16 +96,17 @@ void setup()   {
 }
 
 void loop() {
-  //t.update();
+  t.update();
   
+  /*
   long t = millis();
   refreshGaugeDisplay();
   uint8_t refresh = millis() - t;
   Serial.print("refresh: ");Serial.print(refresh);Serial.print("  avg : ");Serial.print(lcdRefreshRate.getAverage() * 1.1);Serial.print(" : ");Serial.println((int)((lcdRefreshRate.getAverage() * 1.1) + 0.5f));
   lcdRefreshRate.addValue(refresh);
-  
-  delay(10);
-
+  //delay(10);
+  delay((int)((lcdRefreshRate.getAverage() * 1.1) + 0.5f));
+  */
 }
 
 void refreshGaugeDisplay() 
@@ -131,7 +132,10 @@ void refreshGaugeDisplay()
   display.clearDisplay();
 #endif  
 #if defined(SCREEN_ST7565)
-    glcd.fillRect(0, 0, 128, 32, LCD_WHITE); 
+    //glcd.fillRect(0, 0, 128, 32, LCD_WHITE);
+    glcd.clear();
+    sprintf(buffer, "Range: %d", pRange);
+    glcd.drawString(2, 41, buffer);
 #endif
   for (uint8_t i = 0; i < CARB_INPUTS; i++) {
     renderGaugeRow(i, carbPressure[i], pLow, pRange);
@@ -141,15 +145,20 @@ void refreshGaugeDisplay()
 #endif
 #if defined(SCREEN_ST7565)
   glcd.refresh();
+  if (pRange > 10) {
+    setBacklight(LCD_BLUE);
+  } else if (pRange > 5) {
+    setBacklight(LCD_ORANGE);
+  } else {
+    setBacklight(LCD_GREEN);
+  }
 #endif
 
   if (TEST_MODE)
   {
     // If all values match, hang around for a while
-    if (pRange == 0) {
-      setBacklight(LCD_GREEN);
-      delay(10000);
-      setBacklight(LCD_BLUE);
+    if (pRange <= 10) {
+      delay(1000);
     }
   }
 }
