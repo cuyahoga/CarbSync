@@ -64,6 +64,14 @@ Adafruit_SSD1306 display(OLED_MOSI, OLED_CLK, OLED_DC, OLED_RESET, OLED_CS);
 #define MODE_COUNT             4
 
 // ==========================
+// Balance options
+// ==========================
+#define BALANCE_1234  0
+#define BALANCE_12    1
+#define BALANCE_34    2
+#define BALANCE_COUNT 3
+
+// ==========================
 // Units Of Measure
 // ==========================
 #define UOM_KPA     0
@@ -77,9 +85,9 @@ Adafruit_SSD1306 display(OLED_MOSI, OLED_CLK, OLED_DC, OLED_RESET, OLED_CS);
 #define BUTTON_ACTION        0     // The interrupt number for the Action button
 
 // Runtime configuration
-#define ADJUSTER_INTERVAL    150   // Millis between updating adjuster values
-#define DEBOUNCE_INTERVAL    50    // Millis for debouncing
-#define DISPLAY_INTERVAL     1000  // Millis between display refreshes
+#define ADJUSTER_INTERVAL    50    // Millis between updating adjuster values
+#define DEBOUNCE_INTERVAL    200   // Millis for debouncing
+#define DISPLAY_INTERVAL     250   // Millis between display refreshes
 #define MAP_SENSOR_COUNT     4     // Number of MAP sensors
 #define MAP_SENSOR_INTERVAL  20    // Millis between sensor readings
 #define MIN_PRESSURE         50
@@ -88,6 +96,7 @@ Adafruit_SSD1306 display(OLED_MOSI, OLED_CLK, OLED_DC, OLED_RESET, OLED_CS);
 
 
 byte mode = MODE_SPLASH;
+byte balance = BALANCE_1234;
 byte uom = UOM_KPA;
 volatile long lastButtonModeDebounceTime = 0;
 volatile long lastButtonActionDebounceTime = 0;
@@ -244,39 +253,38 @@ void refreshDisplayBalance() {
   display.setTextColor(WHITE);
   display.setCursor(0, 17);
   display.print(getUomDesc());
+  if (!balance == BALANCE_1234) {
+    display.setCursor(40, 17);
+    display.print(F("Ports "));
+    if (balance == BALANCE_12) {
+      display.print(F("1 & 2"));
+    } else {
+      display.print(F("3 & 4"));
+    }
+  }
   display.setCursor(0, 25);
   display.print(F("----"));
+  if (!balance == BALANCE_1234) {
+    display.setCursor(40, 25);
+    display.print(F("-----------"));
+  }
   
   // Determine the min, max and range of input values
-  uint8_t pLow = MAX_PRESSURE;
-  uint8_t pHigh = MIN_PRESSURE;
-  uint8_t pRange = 0;
-  for (byte sensor = 0; sensor < MAP_SENSOR_COUNT; sensor++) 
+  int pLow = 1023;
+  int pHigh = 0;
+  int pRange = 0;
+  for (byte sensor = (balance == BALANCE_34 ? 2 : 0); sensor < (balance == BALANCE_12 ? 2 : MAP_SENSOR_COUNT); sensor++) 
   {
-    pLow = min(pLow, mapSensorReadingsKPa[sensor].getAvg());
-    pHigh = max(pHigh, mapSensorReadingsKPa[sensor].getAvg());
+    pLow = min(pLow, mapSensorReadings[sensor].getAvg());
+    pHigh = max(pHigh, mapSensorReadings[sensor].getAvg());
   }
   pRange = pHigh - pLow;
 
   // Display each of the values relative to the current range
-  for (byte sensor = 0; sensor < MAP_SENSOR_COUNT; sensor++) {
-    renderGaugeRow(sensor, mapSensorReadingsKPa[sensor].getAvg(), pLow, pRange);
+  int row = 0;
+  for (byte sensor = (balance == BALANCE_34 ? 2 : 0); sensor < (balance == BALANCE_12 ? 2 : MAP_SENSOR_COUNT); sensor++) {
+    renderGaugeRow(row++, mapSensorReadingsKPa[sensor].getAvg(), mapSensorReadings[sensor].getAvg(), pLow, pRange);
   }
-
-  /*int mapKpa;
-  for (byte sensor = 0; sensor < MAP_SENSOR_COUNT; sensor++) { 
-    Serial.print(F("MAP Sensor: ")); Serial.print(sensor + 1); Serial.print(F("   val: ")); Serial.print(mapSensors[sensor].getCurrentReading()); Serial.print(F("  ")); Serial.print(round(mapSensors[sensor].getCurrentReadingMv())); Serial.print(F(" mV  Pressure: ")); Serial.print(mapSensors[sensor].getPressureKpa()); Serial.println(F(" kPa"));
-  }
-  Serial.println(F("------------"));*/
-  
-  /*
-  for (byte sensor = 0; sensor < MAP_SENSOR_COUNT; sensor++) { 
-    Serial.print((int)mapSensorReadings[sensor].getAvg()); Serial.print(F("  ")); 
-    Serial.print((int)mapSensorReadingsMv[sensor].getAvg()); Serial.print(F("mv  "));
-    Serial.print((int)mapSensorReadingsKPa[sensor].getAvg());Serial.println(F(" KPa"));
-  }  
-  Serial.println();
-  */
 }
 
 void refreshDisplayUnitOfMeasure() {
@@ -312,25 +320,28 @@ void refreshDisplayCalibration() {
     display.print(adjusterReadings[sensor]);
     display.setCursor(78, row);
     display.print(formatReadingInUom(mapSensorReadingsKPa[sensor].getAvg(), true));
-
-    //Serial.print(F("Sensor: ")); Serial.print(sensor + 1); Serial.print(F("   val: ")); Serial.print(mapSensorReadings[sensor].getAvg()); Serial.print(F("  Offset: ")); Serial.print(adjusterReadings[sensor]); Serial.print(F("  Pressure: ")); Serial.print(mapSensorReadingsKPa[sensor].getAvg()); Serial.println(F(" kPa"));
   }
 }
 
-void renderGaugeRow(byte row, uint8_t val, uint8_t low, uint8_t range) {
+void renderGaugeRow(byte row, int pressure, int val, int low, int range) {
   
   // Map the row number to a Y co-ordinate
-  row = (row * 8) + 33;
+  row = (row * (balance == BALANCE_1234 ? 8 : 16)) + 33;
   // Show the current value
   display.setCursor(0, row);
-  display.print(formatReadingInUom(val, false));
+  if (!balance == BALANCE_1234) {
+    display.setTextSize(2);
+  }
+  display.print(formatReadingInUom(pressure, false));
+
+  // Scale the range
+  int scale = (range < 30 ? roundup(range, 10) : (range < 100 ? roundup(range, 25) : 100));
+  low -= ((scale - range) / 2);
 
   // Show a slider representing the current value for the row
-  uint8_t rel = map((range == 0 ? 1 : val - low), 0, (range == 0 ? 2 : range), 0, 84);
-
-  display.fillRect(27 + rel, row, 8, 7, WHITE);
-  display.fillRect(27 + rel + 10, row, 8, 7, WHITE);
-
+  byte rel = (range < 3 ? 42 : map(val, low, low + scale, 0, (!balance == BALANCE_1234 && uom == UOM_PSI ? 64 : 84)));
+  display.fillRect(27 + (!balance == BALANCE_1234 && uom == UOM_PSI ? 20 : 0) + rel, row, 8, (balance == BALANCE_1234 ? 7 : 14), WHITE);
+  display.fillRect(27 + (!balance == BALANCE_1234 && uom == UOM_PSI ? 20 : 0) + rel + 10, row, 8, (balance == BALANCE_1234 ? 7 : 14), WHITE);
 }
 
 float convertKPaToUom(int kpa) {
@@ -374,6 +385,11 @@ void handleButtonAction()
     lastButtonActionDebounceTime = millis();
     switch (mode) {
       case MODE_BALANCE:
+        // Change the current Balance display
+        if (++balance == BALANCE_COUNT) {
+          // Cycle back round to the first UOM
+          balance = 0;
+        }
         break;
       case MODE_UNIT_OF_MEASURE:
         // Change the current Unit Of Measure
@@ -403,4 +419,16 @@ void handleButtonMode()
   }  
 }
 
+int roundup(int numToRound, int multiple) 
+{ 
+  if(multiple == 0) 
+  { 
+    return numToRound;  
+  } 
+
+  int remainder = numToRound % multiple;
+  if (remainder == 0)
+    return numToRound;
+  return numToRound + multiple - remainder;
+}
 
