@@ -9,7 +9,11 @@ void PressureSensor::init() {
 }
 
 int PressureSensor::getPressureKpa() {
-  return mapCurrentReading(getPressureMinMv(), getPressureMaxMv(), getPressureMinKpa(), getPressureMaxKpa());
+  return mapReading(getCurrentReading() + getPressureOffset(), getPressureMinMv(), getPressureMaxMv(), getPressureMinKpa(), getPressureMaxKpa());
+}
+
+int PressureSensor::getPressureOffset() {
+  return _pressureOffset;
 }
 
 byte PressureSensor::getPressurePin() {
@@ -21,7 +25,9 @@ int PressureSensor::readPressureKpa(int vccMv) {
   return getPressureKpa();
 }
 
-
+void PressureSensor::setPressureOffset(int offset) {
+  _pressureOffset = offset;
+}
 
 
 

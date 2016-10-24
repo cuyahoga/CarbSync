@@ -8,9 +8,10 @@
 #include <SPI.h>
 #include <Wire.h>
 #include <Button.h>              // https://github.com/JChristensen/Button
-#include <Metro.h>               // https://github.com/thomasfredericks/Metro-Arduino-Wiring
+#include <Timer.h>               // https://github.com/JChristensen/Timer
 #include <RunningAverage.h>      // http://playground.arduino.cc/Main/RunningAverage
 //#include <Vcc.h>
+#include <Potentiometer.h>       // http://playground.arduino.cc/Code/Potentiometer
 #include "Bosch0261230043.h"
 
 RunningAverage lcdRefreshRate(10);
@@ -56,6 +57,7 @@ RunningAverage lcdRefreshRate(10);
 // ===============================================================
 Bosch0261230043 mapSensors[] = {Bosch0261230043("MAP 1", A0), Bosch0261230043("MAP 2", A1), Bosch0261230043("MAP 3", A2), Bosch0261230043("MAP 4", A3)};
 #define MAP_SENSOR_COUNT 4
+#define MAP_SENSOR_MS    100
 int vccMv = 0;
 
 // Buttons
@@ -69,15 +71,24 @@ Button btnMode(BUTTON_MODE, PULLUP, INVERT, DEBOUNCE_MS);
 Button btnAction(BUTTON_ACTION, PULLUP, INVERT, DEBOUNCE_MS);
 
 // Potentiometers
-const byte adjusters[4] = {A4, A5, A6, A7};
+//const byte adjusters[4] = {A4, A5, A6, A7};
+#define ADJUSTER_SECTORS 70
+#define ADJUSTER_OFFSET  35
+Potentiometer adjusters[4] = {Potentiometer(A4, ADJUSTER_SECTORS), Potentiometer(A5, ADJUSTER_SECTORS), Potentiometer(A6, ADJUSTER_SECTORS), Potentiometer(A7, ADJUSTER_SECTORS)};
+
+Timer t;
+int tickDisplay, tickButtons, tickSensors;
 
 #define MODE_SPLASH            0
 #define MODE_BALANCE           1
 #define MODE_AUTO_CALIBRATE    2
 #define MODE_MANUAL_CALIBRATE  3
-const String modes[] = {"Splash", "Man Calibrate", "Auto Calibrate", "Balance"};
 #define MODE_COUNT             4
 byte mode = MODE_SPLASH;
+
+#define PIN_BALANCE           5
+#define PIN_AUTO_CALIBRATE    7
+#define PIN_MANUAL_CALIBRATE  8
 
 #define DISPLAY_REFRESH   500
 
@@ -87,18 +98,17 @@ byte mode = MODE_SPLASH;
 
 #define TEST_MODE false
 
-// Timers
-Metro buttonMetro = Metro(DEBOUNCE_MS * 2);  // Instantiate an instance to monitor buttons
-Metro displayMetro = Metro(DISPLAY_REFRESH);  // Instantiate an instance to refresh the display
-
-
+//uint8_t carbPressure[CARB_INPUTS] = {0, 0, 0, 0};
 uint8_t carbPressure[CARB_INPUTS] = {MIN_PRESSURE, MAX_PRESSURE, MIN_PRESSURE, MAX_PRESSURE};
 uint8_t adj[CARB_INPUTS] = {2, 4, 6, 8};
 
-char   buffer[10]; 
+char   buffer[60]; 
 
 void setup()   {                
   Serial.begin(9600);
+//  while (!Serial) {
+//    ; // wait for serial port to connect. Needed for Leonardo only
+//  }
 
   // Set the pressure sensors to smooth readings
   for (byte sensor = 0; sensor < MAP_SENSOR_COUNT; sensor++) { 
@@ -123,28 +133,20 @@ void setup()   {
   setBacklight(LCD_BLUE);
 #endif
 
+  pinMode(PIN_BALANCE, OUTPUT);
+  pinMode(PIN_AUTO_CALIBRATE, OUTPUT);
+  pinMode(PIN_MANUAL_CALIBRATE, OUTPUT);
+
+  tickButtons = t.every(DEBOUNCE_MS * 2, readButtons);
+  tickDisplay = t.every(DISPLAY_REFRESH, refreshDisplay);
+  tickSensors = t.every(MAP_SENSOR_MS, readMAPSensors);
+    
 }
 
 void loop() {
-
-  if (buttonMetro.check() == 1) { // check if the metro has passed it's interval .
-  btnMode.read(); 
-  if (btnMode.wasPressed()) {
-    // Increment MODE with each button press
-    if (++mode == MODE_COUNT) {
-      mode = MODE_BALANCE;
-    }
-  }
-  //Serial.print(F("Mode : ")); Serial.println(mode);
-  
-  btnAction.read(); 
-  }
   
   // See if it's time to refresh the display
-  //t.update();
-  if (displayMetro.check() ==1) {
-    refreshDisplay();
-  }
+  t.update();
   
   /*
   long t = millis();
@@ -155,28 +157,67 @@ void loop() {
   //delay(10);
   delay((int)((lcdRefreshRate.getAverage() * 1.1) + 0.5f));
   */
-
 }
+
+void readButtons() {
+  btnMode.read(); 
+  if (btnMode.wasPressed()) {
+    // Increment MODE with each button press
+    if (++mode == MODE_COUNT) {
+      // Cycle back round to the balance mode
+      mode = MODE_BALANCE;
+    }
+  }
+//  Serial.print(F("Mode : ")); Serial.println(mode);
+  
+  btnAction.read(); 
+  
+}
+
+void refreshLEDs() {
+  digitalWrite(PIN_BALANCE, LOW);
+  digitalWrite(PIN_AUTO_CALIBRATE, LOW);
+  digitalWrite(PIN_MANUAL_CALIBRATE, LOW);
+  
+  switch(mode) {
+    case MODE_BALANCE:
+      digitalWrite(PIN_BALANCE, HIGH);
+      break;
+    case MODE_AUTO_CALIBRATE:
+      digitalWrite(PIN_AUTO_CALIBRATE, HIGH);
+      break;
+    case MODE_MANUAL_CALIBRATE:
+      digitalWrite(PIN_MANUAL_CALIBRATE, HIGH);
+      break;
+    default:
+      // Do nothing
+      break;
+  }
+} 
 
 void refreshDisplay() {
   
 #if defined(SCREEN_SSD1306)
+  refreshLEDs();
   display.clearDisplay();
 #endif  
   
   display.setCursor(0, 1);
   switch (mode) {
-    case MODE_SPLASH:
-      display.print("Splash");
+    case MODE_BALANCE:
+      //display.print("Balance");
+      refreshGaugeDisplay();
       break;
     case MODE_AUTO_CALIBRATE:
-      display.print("Auto Calibrate");
+      display.print("Auto Calibration");
       break;
     case MODE_MANUAL_CALIBRATE:
-      display.print("Manual Calibrate");
+      //display.print("Manual Calibration");
+      refreshManualCalibrationDisplay();
       break;
-    default: //
-      display.print("Balance");
+    default: 
+      display.print("Splash");
+      break;
   }
 
 #if defined(SCREEN_SSD1306)
@@ -184,19 +225,52 @@ void refreshDisplay() {
 #endif
 }
 
+void refreshManualCalibrationDisplay() {
+  
+  byte row;
+  
+#if defined(SCREEN_SSD1306)
+  display.clearDisplay();
+#endif  
+  
+  for (byte sensor = 0; sensor < MAP_SENSOR_COUNT; sensor++) {
+    // Map the row number to a Y co-ordinate
+    row = (sensor * 8) + 1;
+#if defined(SCREEN_SSD1306)
+    display.setCursor(0, row);
+//    display.print("Port :");
+//    display.setCursor(22, row);
+    display.print(sensor + 1);
+    display.setCursor(15, row);
+//    display.print("Offset:");
+//    display.setCursor(62, row);
+    display.print(mapSensors[sensor].getCurrentReading() + mapSensors[sensor].getPressureOffset());
+    display.setCursor(70, row);
+    display.print(mapSensors[sensor].getPressureOffset());
+    display.setCursor(90, row);
+    display.print(mapSensors[sensor].getPressureKpa());
+//    display.print("Adj val:");
+//    display.setCursor(102, row);
+//    display.print(mapSensors[sensor].getPressureKpa());
+//    dtostrf(f_val,7, 3, outstr)
+    //sprintf(buffer, "%d: Offset: %d  Val :%d  Kpa: %d", sensor + 1, mapSensors[sensor].getPressureOffset(), mapSensors[sensor].getCurrentReading(), mapSensors[sensor].getPressureKpa());
+    //display.print(buffer);
+    //Serial.println(buffer);
+    
+    Serial.print(F("MAP Sensor: ")); Serial.print(sensor + 1); Serial.print(F("   val: ")); Serial.print(mapSensors[sensor].getCurrentReading() + mapSensors[sensor].getPressureOffset()); Serial.print(F("  Offset: ")); Serial.print(mapSensors[sensor].getPressureOffset()); Serial.print(F("  Pressure: ")); Serial.print(mapSensors[sensor].getPressureKpa()); Serial.println(F(" kPa"));
+
+#endif
+  }
+
+  
+#if defined(SCREEN_SSD1306)
+  display.display();
+#endif
+  
+}
+
 void refreshGaugeDisplay() 
 {
-  // Establish power specification
-  vccMv = readVcc();
-  Serial.print(F("VCC: ")); Serial.print(vccMv); Serial.println(F(" mV"));
-
-  if (TEST_MODE)
-  {
-    generateGaugeTestData();
-  } else {
-    readMAPSensors();
-  }
-  
   // Determine the min, max and range of input values
   uint8_t pLow = MAX_PRESSURE;
   uint8_t pHigh = MIN_PRESSURE;
@@ -261,10 +335,30 @@ void generateGaugeTestData() {
 }
 
 void readMAPSensors() {
-  // Bosch MAP sensors
-  for (byte sensor = 0; sensor < MAP_SENSOR_COUNT; sensor++) { 
-    mapSensors[sensor].readPressureKpa(vccMv);
+  // Establish power specification
+  vccMv = readVcc();
+  Serial.print(F("VCC: ")); Serial.print(vccMv); Serial.println(F(" mV"));
+
+  if (TEST_MODE)
+  {
+    generateGaugeTestData();
+  } else {
+    // Bosch MAP sensors
+    readAdjusters();
+    for (byte sensor = 0; sensor < MAP_SENSOR_COUNT; sensor++) { 
+      mapSensors[sensor].readPressureKpa(vccMv);
+    }
   }
+}
+
+void readAdjusters() {
+    
+  int offset;
+  for (byte adjuster = 0; adjuster < MAP_SENSOR_COUNT; adjuster++) { 
+    offset = ((adjusters[adjuster].getSector() - ADJUSTER_SECTORS) * -1) - ADJUSTER_OFFSET;
+    mapSensors[adjuster].setPressureOffset(offset);
+  }
+  
 }
 
 void renderGaugeRow(byte row, uint8_t val, uint8_t low, uint8_t range) {

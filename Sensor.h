@@ -20,6 +20,7 @@ class Sensor {
     unsigned int getVccMv();
     float getVccMvPerUnit();
     int mapCurrentReading(float inMinMv, float inMaxMv, int outMin, int outMax);
+    int mapReading(float reading, float inMinMv, float inMaxMv, int outMin, int outMax);
     void readSensor(int vccMv);
   private:
     String _desc;

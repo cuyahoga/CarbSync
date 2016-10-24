@@ -39,8 +39,12 @@ unsigned int Sensor::getVccMv() {
 float Sensor::getVccMvPerUnit() {
   return getVccMv() / 1023.0;
 }
-
+ 
 int Sensor::mapCurrentReading(float inMinMv, float inMaxMv, int outMin, int outMax) {
+  return mapReading(getCurrentReading(), inMinMv, inMaxMv, outMin, outMax);
+}
+
+int Sensor::mapReading(float reading, float inMinMv, float inMaxMv, int outMin, int outMax) {
   /**
    * Map the voltage reading from a sensor to a given value range, against a soure range compensated against supply voltage
    *
@@ -57,7 +61,7 @@ int Sensor::mapCurrentReading(float inMinMv, float inMaxMv, int outMin, int outM
    * pressure = 101 kPa
    */
 //  Serial.print("mapCurrentReading(");Serial.print(inMinMv);Serial.print(", ");Serial.print(inMaxMv);Serial.print(", ");Serial.print(outMin);Serial.print(", ");Serial.print(outMax);Serial.println(");");
-  return map(getCurrentReading(), round(((inMinMv * getVccOffset()) / getVccMvPerUnit()) - 1), round(((inMaxMv * getVccOffset()) / getVccMvPerUnit()) - 1), outMin, outMax);
+  return map(reading, round(((inMinMv * getVccOffset()) / getVccMvPerUnit()) - 1), round(((inMaxMv * getVccOffset()) / getVccMvPerUnit()) - 1), outMin, outMax);
 }
 
 void Sensor::readSensor(int vccMv) {
