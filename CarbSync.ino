@@ -10,7 +10,7 @@
 #include <Button.h>              // https://github.com/JChristensen/Button
 #include <Timer.h>               // https://github.com/JChristensen/Timer
 #include <RunningAverage.h>      // http://playground.arduino.cc/Main/RunningAverage
-//#include <Vcc.h>
+#include "Vcc.h"
 #include <Potentiometer.h>       // http://playground.arduino.cc/Code/Potentiometer
 #include "Bosch0261230043.h"
 
@@ -48,9 +48,17 @@ RunningAverage lcdRefreshRate(10);
   #define OLED_MOSI       9
   #define OLED_RESET      13
   Adafruit_SSD1306 display(OLED_MOSI, OLED_CLK, OLED_DC, OLED_RESET, OLED_CS);
-  #if (SSD1306_LCDHEIGHT != 32)
+  #if (SSD1306_LCDHEIGHT != 64)
   #error("Height incorrect, please fix Adafruit_SSD1306.h!");
   #endif
+
+// ===============================================================
+// VCC adjustment for the specific board the code is running on
+//   (1.1 * (1+(1-(readVcc()/VccFromVoltmeter))) * 1023 * 1000
+//   =
+//   (1.1 * (1+(1-(4935/4965))) * 1023 * 1000
+// ===============================================================
+#define VCC_ADJUSTMENT 1132099L
 
 // ===============================================================
 // Bosch 0 261 230 043 MAP sensors
@@ -84,7 +92,7 @@ int tickDisplay, tickButtons, tickSensors;
 #define MODE_AUTO_CALIBRATE    2
 #define MODE_MANUAL_CALIBRATE  3
 #define MODE_COUNT             4
-byte mode = MODE_SPLASH;
+byte mode = MODE_BALANCE;
 
 #define PIN_BALANCE           5
 #define PIN_AUTO_CALIBRATE    7
@@ -336,7 +344,7 @@ void generateGaugeTestData() {
 
 void readMAPSensors() {
   // Establish power specification
-  vccMv = readVcc();
+  vccMv = readVcc(VCC_ADJUSTMENT);
   Serial.print(F("VCC: ")); Serial.print(vccMv); Serial.println(F(" mV"));
 
   if (TEST_MODE)
@@ -392,32 +400,5 @@ void setBacklight(uint8_t r, uint8_t g, uint8_t b) {
   analogWrite(PIN_GREEN, g);
   analogWrite(PIN_BLUE,  b);
 #endif
-}
-
-long readVcc() {
-  // http://provideyourown.com/2012/secret-arduino-voltmeter-measure-battery-voltage/
-  // Read 1.1V reference against AVcc
-  // set the reference to Vcc and the measurement to the internal 1.1V reference
-  #if defined(__AVR_ATmega32U4__) || defined(__AVR_ATmega1280__) || defined(__AVR_ATmega2560__)
-    ADMUX = _BV(REFS0) | _BV(MUX4) | _BV(MUX3) | _BV(MUX2) | _BV(MUX1);
-  #elif defined (__AVR_ATtiny24__) || defined(__AVR_ATtiny44__) || defined(__AVR_ATtiny84__)
-    ADMUX = _BV(MUX5) | _BV(MUX0);
-  #elif defined (__AVR_ATtiny25__) || defined(__AVR_ATtiny45__) || defined(__AVR_ATtiny85__)
-    ADMUX = _BV(MUX3) | _BV(MUX2);
-  #else
-    ADMUX = _BV(REFS0) | _BV(MUX3) | _BV(MUX2) | _BV(MUX1);
-  #endif  
- 
-  delay(2); // Wait for Vref to settle
-  ADCSRA |= _BV(ADSC); // Start conversion
-  while (bit_is_set(ADCSRA,ADSC)); // measuring
- 
-  uint8_t low  = ADCL; // must read ADCL first - it then locks ADCH  
-  uint8_t high = ADCH; // unlocks both
- 
-  long result = (high<<8) | low;
- 
-  result = 1125300L / result; // Calculate Vcc (in mV); 1125300 = 1.1*1023*1000
-  return result; // Vcc in millivolts
 }
 
