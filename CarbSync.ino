@@ -1,56 +1,30 @@
 /*********************************************************************
-
-  Display 4 sliders representing values that go up and down, where
-  each slider position represents the current value relative to the 
-  lowest and highest of all four current values
-  
-*********************************************************************/
+ *
+ * Carbotron 4000
+ *
+ *
+ *********************************************************************/
 #include <SPI.h>
 #include <Wire.h>
-#include <Button.h>              // https://github.com/JChristensen/Button
+#include <Adafruit_GFX.h>        // https://github.com/adafruit/Adafruit-GFX-Library
+#include <Adafruit_SSD1306.h>    // https://github.com/adafruit/Adafruit_SSD1306
+#include <movingAvg.h>           // https://github.com/JChristensen/movingAvg
 #include <Timer.h>               // https://github.com/JChristensen/Timer
-#include <RunningAverage.h>      // http://playground.arduino.cc/Main/RunningAverage
-#include "Vcc.h"
+#include "Vcc.h"                 // http://provideyourown.com/2012/secret-arduino-voltmeter-measure-battery-voltage/
 #include <Potentiometer.h>       // http://playground.arduino.cc/Code/Potentiometer
-#include "Bosch0261230043.h"
-
-RunningAverage lcdRefreshRate(10);
 
 // ===============================================================
-// Adafruit ST7565 128x64 GLCD
+// Adafruit SSD1306 128x64 OLED
 // ===============================================================
-/*
-  #define SCREEN_ST7565
-  #include "JeeLib.h"              // https://github.com/jcw/jeelib
-  #include <GLCD_ST7565.h>         // https://github.com/cuyahoga/glcdlib
-  #include "utility/font_clR6x8.h"
-  #define PIN_RED       3  // Red cathode
-  #define PIN_GREEN     5  // Green cathode
-  #define PIN_BLUE      6  // Blue cathode
-  #define LCD_BLACK     1
-  #define LCD_WHITE     0
-  #define LCD_RED       0, 255, 255
-  #define LCD_GREEN     255, 0, 255
-  #define LCD_BLUE      255, 255, 0
-  #define LCD_ORANGE    0,  90, 255
-  GLCD_ST7565           glcd;
-*/  
-// ===============================================================
-// Adafruit SSD1306 128x32 OLED
-// ===============================================================
-
-  #define SCREEN_SSD1306
-  #include <Adafruit_GFX.h>        // https://github.com/adafruit/Adafruit-GFX-Library
-  #include <Adafruit_SSD1306.h>    // https://github.com/adafruit/Adafruit_SSD1306
-  #define OLED_DC         11
-  #define OLED_CS         12
-  #define OLED_CLK        10
-  #define OLED_MOSI       9
-  #define OLED_RESET      13
-  Adafruit_SSD1306 display(OLED_MOSI, OLED_CLK, OLED_DC, OLED_RESET, OLED_CS);
-  #if (SSD1306_LCDHEIGHT != 64)
-  #error("Height incorrect, please fix Adafruit_SSD1306.h!");
-  #endif
+#define OLED_DC         11
+#define OLED_CS         12
+#define OLED_CLK        10
+#define OLED_MOSI       9
+#define OLED_RESET      13
+Adafruit_SSD1306 display(OLED_MOSI, OLED_CLK, OLED_DC, OLED_RESET, OLED_CS);
+#if (SSD1306_LCDHEIGHT != 64)
+#error("Height incorrect, please fix Adafruit_SSD1306.h!");
+#endif
 
 // ===============================================================
 // VCC adjustment for the specific board the code is running on
@@ -58,347 +32,375 @@ RunningAverage lcdRefreshRate(10);
 //   =
 //   (1.1 * (1+(1-(4935/4965))) * 1023 * 1000
 // ===============================================================
-#define VCC_ADJUSTMENT 1132099L
+#define VCC_ADJUSTMENT 1125300L //1132099L
 
 // ===============================================================
-// Bosch 0 261 230 043 MAP sensors
+// Bosch 0 261 230 043 MAP sensor
+// The family is documented at http://www.bosch.com.au/car_parts/en/downloads/Map_Sensor_Technical_Specification.pdf
+// The only specific reference to this variant is at http://avtodata.by/product_10836.html from which the following specs were taken
+// 
+// The pressure sensor has the following specification at 5V supply;
+// 
+//   0.405V =  10 kPa
+//   4.750V = 117 kPa
 // ===============================================================
-Bosch0261230043 mapSensors[] = {Bosch0261230043("MAP 1", A0), Bosch0261230043("MAP 2", A1), Bosch0261230043("MAP 3", A2), Bosch0261230043("MAP 4", A3)};
-#define MAP_SENSOR_COUNT 4
-#define MAP_SENSOR_MS    100
-int vccMv = 0;
-
-// Buttons
-#define BUTTON_MODE     2      // Selects the operating mode
-#define BUTTON_ACTION   3      // Triggers an action within a mode
-#define PULLUP true            // Use the internal pullup resistor.
-#define INVERT true            // Since the pullup resistor will keep the pin high unless the switch is closed, this is negative logic, i.e. a high state means the button is NOT pressed. (Assuming a normally open switch.)
-#define DEBOUNCE_MS 20         // A debounce time of 20 milliseconds usually works well for tactile button switches.
-
-Button btnMode(BUTTON_MODE, PULLUP, INVERT, DEBOUNCE_MS);
-Button btnAction(BUTTON_ACTION, PULLUP, INVERT, DEBOUNCE_MS);
+#define MAP_SENSOR_MIN_MV        405
+#define MAP_SENSOR_MAX_MV        4750
+#define MAP_SENSOR_MIN_KPA       10
+#define MAP_SENSOR_MAX_KPA       117
+#define MAP_SENSOR_REFERENCE_MV  5000.0
 
 // Potentiometers
-//const byte adjusters[4] = {A4, A5, A6, A7};
 #define ADJUSTER_SECTORS 70
 #define ADJUSTER_OFFSET  35
-Potentiometer adjusters[4] = {Potentiometer(A4, ADJUSTER_SECTORS), Potentiometer(A5, ADJUSTER_SECTORS), Potentiometer(A6, ADJUSTER_SECTORS), Potentiometer(A7, ADJUSTER_SECTORS)};
 
-Timer t;
-int tickDisplay, tickButtons, tickSensors;
-
+// ==========================
+// Display modes
+// ==========================
 #define MODE_SPLASH            0
 #define MODE_BALANCE           1
-#define MODE_AUTO_CALIBRATE    2
-#define MODE_MANUAL_CALIBRATE  3
+#define MODE_UNIT_OF_MEASURE   2
+#define MODE_CALIBRATION       3
 #define MODE_COUNT             4
-byte mode = MODE_BALANCE;
 
-#define PIN_BALANCE           5
-#define PIN_AUTO_CALIBRATE    7
-#define PIN_MANUAL_CALIBRATE  8
+// ==========================
+// Units Of Measure
+// ==========================
+#define UOM_KPA     0
+#define UOM_HGIN    1
+#define UOM_PSI     2
+#define UOM_COUNT   3
 
-#define DISPLAY_REFRESH   500
 
-#define CARB_INPUTS 4
-#define MIN_PRESSURE 50
-#define MAX_PRESSURE 120
+// Buttons
+#define BUTTON_MODE          1     // The interrupt number for the Mode button
+#define BUTTON_ACTION        0     // The interrupt number for the Action button
 
-#define TEST_MODE false
+// Runtime configuration
+#define ADJUSTER_INTERVAL    150   // Millis between updating adjuster values
+#define DEBOUNCE_INTERVAL    50    // Millis for debouncing
+#define DISPLAY_INTERVAL     1000  // Millis between display refreshes
+#define MAP_SENSOR_COUNT     4     // Number of MAP sensors
+#define MAP_SENSOR_INTERVAL  20    // Millis between sensor readings
+#define MIN_PRESSURE         50
+#define MAX_PRESSURE         120
 
-//uint8_t carbPressure[CARB_INPUTS] = {0, 0, 0, 0};
-uint8_t carbPressure[CARB_INPUTS] = {MIN_PRESSURE, MAX_PRESSURE, MIN_PRESSURE, MAX_PRESSURE};
-uint8_t adj[CARB_INPUTS] = {2, 4, 6, 8};
 
-char   buffer[60]; 
 
-void setup()   {                
+byte mode = MODE_SPLASH;
+byte uom = UOM_KPA;
+volatile long lastButtonModeDebounceTime = 0;
+volatile long lastButtonActionDebounceTime = 0;
+
+Timer t;
+int tickAdjusters, tickBaseline, tickDisplay, tickSensors;
+
+int mapSensorPins[MAP_SENSOR_COUNT] = {A0, A1, A2, A3};
+movingAvg mapSensorReadings[MAP_SENSOR_COUNT] = {movingAvg(), movingAvg(), movingAvg(), movingAvg()}; 
+movingAvg mapSensorReadingsMv[MAP_SENSOR_COUNT] = {movingAvg(), movingAvg(), movingAvg(), movingAvg()}; 
+movingAvg mapSensorReadingsKPa[MAP_SENSOR_COUNT] = {movingAvg(), movingAvg(), movingAvg(), movingAvg()}; 
+Potentiometer adjusters[MAP_SENSOR_COUNT] = {Potentiometer(A4, ADJUSTER_SECTORS), Potentiometer(A5, ADJUSTER_SECTORS), Potentiometer(A6, ADJUSTER_SECTORS), Potentiometer(A7, ADJUSTER_SECTORS)};
+int adjusterReadings[MAP_SENSOR_COUNT];
+int atmosphericKPa = 0;
+
+
+void setup() {
   Serial.begin(9600);
-//  while (!Serial) {
-//    ; // wait for serial port to connect. Needed for Leonardo only
-//  }
 
-  // Set the pressure sensors to smooth readings
-  for (byte sensor = 0; sensor < MAP_SENSOR_COUNT; sensor++) { 
-    mapSensors[sensor].setSampling(5, 10);
-  }
-    
-#if defined(SCREEN_SSD1306)
-  // Set up the 128x32 OLED
+  // Set up the 128x64 OLED
   display.begin(SSD1306_SWITCHCAPVCC);
   display.clearDisplay();
-  display.setTextSize(1);
-  display.setTextColor(WHITE);
-#endif
-#if defined(SCREEN_ST7565)
-  glcd.begin(0x19);
-  glcd.setFont(font_clR6x8);
 
-  // Initialise the backlight
-  pinMode(PIN_RED, OUTPUT);   
-  pinMode(PIN_GREEN, OUTPUT);
-  pinMode(PIN_BLUE, OUTPUT);
-  setBacklight(LCD_BLUE);
-#endif
+  attachInterrupt(BUTTON_MODE, handleButtonMode, RISING);
+  attachInterrupt(BUTTON_ACTION, handleButtonAction, RISING);
 
-  pinMode(PIN_BALANCE, OUTPUT);
-  pinMode(PIN_AUTO_CALIBRATE, OUTPUT);
-  pinMode(PIN_MANUAL_CALIBRATE, OUTPUT);
-
-  tickButtons = t.every(DEBOUNCE_MS * 2, readButtons);
-  tickDisplay = t.every(DISPLAY_REFRESH, refreshDisplay);
-  tickSensors = t.every(MAP_SENSOR_MS, readMAPSensors);
-    
+  tickAdjusters = t.every(ADJUSTER_INTERVAL, readAdjusters);
+  tickBaseline = t.after(1000, readAtmosphericPressure);
+  tickDisplay = t.every(DISPLAY_INTERVAL, refreshDisplay);
+  tickSensors = t.every(MAP_SENSOR_INTERVAL, readMAPSensors);
 }
 
 void loop() {
   
-  // See if it's time to refresh the display
+  // See if it's time to act on a timer
   t.update();
-  
-  /*
-  long t = millis();
-  refreshGaugeDisplay();
-  uint8_t refresh = millis() - t;
-  Serial.print("refresh: ");Serial.print(refresh);Serial.print("  avg : ");Serial.print(lcdRefreshRate.getAverage() * 1.1);Serial.print(" : ");Serial.println((int)((lcdRefreshRate.getAverage() * 1.1) + 0.5f));
-  lcdRefreshRate.addValue(refresh);
-  //delay(10);
-  delay((int)((lcdRefreshRate.getAverage() * 1.1) + 0.5f));
-  */
+
 }
 
-void readButtons() {
-  btnMode.read(); 
-  if (btnMode.wasPressed()) {
-    // Increment MODE with each button press
-    if (++mode == MODE_COUNT) {
-      // Cycle back round to the balance mode
-      mode = MODE_BALANCE;
-    }
-  }
-//  Serial.print(F("Mode : ")); Serial.println(mode);
+void readAtmosphericPressure() {
   
-  btnAction.read(); 
-  
+   // Establish power specification and then set the baseline atmospheric pressure value
+  int vccMv = readVcc(VCC_ADJUSTMENT);
+  atmosphericKPa = convertReadingToKPa(analogRead(mapSensorPins[0]) + adjusterReadings[0], (float)vccMv / MAP_SENSOR_REFERENCE_MV, vccMv / 1023.0, MAP_SENSOR_MIN_MV, MAP_SENSOR_MAX_MV, MAP_SENSOR_MIN_KPA, MAP_SENSOR_MAX_KPA);
 }
 
-void refreshLEDs() {
-  digitalWrite(PIN_BALANCE, LOW);
-  digitalWrite(PIN_AUTO_CALIBRATE, LOW);
-  digitalWrite(PIN_MANUAL_CALIBRATE, LOW);
+String formatReadingInUom(int source, bool appendUom) {
   
-  switch(mode) {
-    case MODE_BALANCE:
-      digitalWrite(PIN_BALANCE, HIGH);
+  String buf;
+  switch(uom) {
+    case UOM_PSI:
+      buf = String(convertKPaToUom(source), 1);
       break;
-    case MODE_AUTO_CALIBRATE:
-      digitalWrite(PIN_AUTO_CALIBRATE, HIGH);
-      break;
-    case MODE_MANUAL_CALIBRATE:
-      digitalWrite(PIN_MANUAL_CALIBRATE, HIGH);
+    case UOM_HGIN:
+      buf = String(convertKPaToUom(source), 0);
       break;
     default:
-      // Do nothing
-      break;
+      buf += source;
   }
-} 
-
-void refreshDisplay() {
-  
-#if defined(SCREEN_SSD1306)
-  refreshLEDs();
-  display.clearDisplay();
-#endif  
-  
-  display.setCursor(0, 1);
-  switch (mode) {
-    case MODE_BALANCE:
-      //display.print("Balance");
-      refreshGaugeDisplay();
-      break;
-    case MODE_AUTO_CALIBRATE:
-      display.print("Auto Calibration");
-      break;
-    case MODE_MANUAL_CALIBRATE:
-      //display.print("Manual Calibration");
-      refreshManualCalibrationDisplay();
-      break;
-    default: 
-      display.print("Splash");
-      break;
+  if (appendUom) {
+    buf += " " + getUomDesc();
   }
-
-#if defined(SCREEN_SSD1306)
-  display.display();
-#endif
+  return buf;
 }
 
-void refreshManualCalibrationDisplay() {
+String getUomDesc() {
   
-  byte row;
-  
-#if defined(SCREEN_SSD1306)
-  display.clearDisplay();
-#endif  
-  
-  for (byte sensor = 0; sensor < MAP_SENSOR_COUNT; sensor++) {
-    // Map the row number to a Y co-ordinate
-    row = (sensor * 8) + 1;
-#if defined(SCREEN_SSD1306)
-    display.setCursor(0, row);
-//    display.print("Port :");
-//    display.setCursor(22, row);
-    display.print(sensor + 1);
-    display.setCursor(15, row);
-//    display.print("Offset:");
-//    display.setCursor(62, row);
-    display.print(mapSensors[sensor].getCurrentReading() + mapSensors[sensor].getPressureOffset());
-    display.setCursor(70, row);
-    display.print(mapSensors[sensor].getPressureOffset());
-    display.setCursor(90, row);
-    display.print(mapSensors[sensor].getPressureKpa());
-//    display.print("Adj val:");
-//    display.setCursor(102, row);
-//    display.print(mapSensors[sensor].getPressureKpa());
-//    dtostrf(f_val,7, 3, outstr)
-    //sprintf(buffer, "%d: Offset: %d  Val :%d  Kpa: %d", sensor + 1, mapSensors[sensor].getPressureOffset(), mapSensors[sensor].getCurrentReading(), mapSensors[sensor].getPressureKpa());
-    //display.print(buffer);
-    //Serial.println(buffer);
-    
-    Serial.print(F("MAP Sensor: ")); Serial.print(sensor + 1); Serial.print(F("   val: ")); Serial.print(mapSensors[sensor].getCurrentReading() + mapSensors[sensor].getPressureOffset()); Serial.print(F("  Offset: ")); Serial.print(mapSensors[sensor].getPressureOffset()); Serial.print(F("  Pressure: ")); Serial.print(mapSensors[sensor].getPressureKpa()); Serial.println(F(" kPa"));
-
-#endif
-  }
-
-  
-#if defined(SCREEN_SSD1306)
-  display.display();
-#endif
-  
-}
-
-void refreshGaugeDisplay() 
-{
-  // Determine the min, max and range of input values
-  uint8_t pLow = MAX_PRESSURE;
-  uint8_t pHigh = MIN_PRESSURE;
-  uint8_t pRange = 0;
-  for (byte sensor = 0; sensor < MAP_SENSOR_COUNT; sensor++) 
-  {
-    pLow = min(pLow, mapSensors[sensor].getPressureKpa());
-    pHigh = max(pHigh, mapSensors[sensor].getPressureKpa());
-  }
-  pRange = pHigh - pLow;
-
-  // Display each of the values relative to the current range
-#if defined(SCREEN_SSD1306)
-  display.clearDisplay();
-#endif  
-#if defined(SCREEN_ST7565)
-    //glcd.fillRect(0, 0, 128, 32, LCD_WHITE);
-    glcd.clear();
-    sprintf(buffer, "Range: %d", pRange);
-    glcd.drawString(2, 41, buffer);
-#endif
-  for (byte sensor = 0; sensor < MAP_SENSOR_COUNT; sensor++) {
-    renderGaugeRow(sensor, mapSensors[sensor].getPressureKpa(), pLow, pRange);
-  }
-#if defined(SCREEN_SSD1306)
-  display.display();
-#endif
-#if defined(SCREEN_ST7565)
-  glcd.refresh();
-  if (pRange > 10) {
-    setBacklight(LCD_BLUE);
-  } else if (pRange > 5) {
-    setBacklight(LCD_ORANGE);
-  } else {
-    setBacklight(LCD_GREEN);
-  }
-#endif
-
-  int mapKpa;
-  for (byte sensor = 0; sensor < MAP_SENSOR_COUNT; sensor++) { 
-    Serial.print(F("MAP Sensor: ")); Serial.print(sensor + 1); Serial.print(F("   val: ")); Serial.print(mapSensors[sensor].getCurrentReading()); Serial.print(F("  ")); Serial.print(round(mapSensors[sensor].getCurrentReadingMv())); Serial.print(F(" mV  Pressure: ")); Serial.print(mapSensors[sensor].getPressureKpa()); Serial.println(F(" kPa"));
-  }
-  Serial.println(F("------------"));
-
-  if (TEST_MODE)
-  {
-    // If all values match, hang around for a while
-    if (pRange <= 10) {
-      delay(1000);
-    }
-  }
-}
-
-void generateGaugeTestData() {
-  // Adjust the current values of each gauge row, then determine min, max and range of values
-  for (uint8_t i = 0; i < CARB_INPUTS; i++) {
-    if (carbPressure[i] > MAX_PRESSURE || carbPressure[i] < MIN_PRESSURE) {
-      adj[i] = adj[i] * -1;
-    }
-    carbPressure[i] = carbPressure[i] + adj[i];
-  }
-}
-
-void readMAPSensors() {
-  // Establish power specification
-  vccMv = readVcc(VCC_ADJUSTMENT);
-  Serial.print(F("VCC: ")); Serial.print(vccMv); Serial.println(F(" mV"));
-
-  if (TEST_MODE)
-  {
-    generateGaugeTestData();
-  } else {
-    // Bosch MAP sensors
-    readAdjusters();
-    for (byte sensor = 0; sensor < MAP_SENSOR_COUNT; sensor++) { 
-      mapSensors[sensor].readPressureKpa(vccMv);
-    }
-  }
+  String desc[UOM_COUNT] = {"KPa", "HgIn", "PSI"};
+  return desc[uom];
 }
 
 void readAdjusters() {
     
   int offset;
   for (byte adjuster = 0; adjuster < MAP_SENSOR_COUNT; adjuster++) { 
-    offset = ((adjusters[adjuster].getSector() - ADJUSTER_SECTORS) * -1) - ADJUSTER_OFFSET;
-    mapSensors[adjuster].setPressureOffset(offset);
+    adjusterReadings[adjuster] = ((adjusters[adjuster].getSector() - ADJUSTER_SECTORS) * -1) - ADJUSTER_OFFSET;
   }
   
+}
+void readMAPSensors() {
+  
+  //unsigned long time = millis();
+  
+  // Establish power specification
+  int vccMv = readVcc(VCC_ADJUSTMENT);
+  //Serial.print(F("VCC: ")); Serial.print(vccMv); Serial.println(F(" mV"));
+
+  int currentReading;
+  float mvPerUnit = vccMv / 1023.0;
+  float currentReadingMv;
+  float vccOffset = (float)vccMv / MAP_SENSOR_REFERENCE_MV;
+  float currentReadingKPa;
+
+  for (byte sensor = 0; sensor < MAP_SENSOR_COUNT; sensor++) { 
+    currentReading = analogRead(mapSensorPins[sensor]) + adjusterReadings[sensor];
+    currentReadingMv = currentReading * (mvPerUnit);
+    currentReadingKPa = convertReadingToKPa(currentReading, vccOffset, mvPerUnit, MAP_SENSOR_MIN_MV, MAP_SENSOR_MAX_MV, MAP_SENSOR_MIN_KPA, MAP_SENSOR_MAX_KPA);
+    
+    mapSensorReadings[sensor].reading(currentReading);
+    mapSensorReadingsMv[sensor].reading(currentReadingMv);
+    mapSensorReadingsKPa[sensor].reading(currentReadingKPa);
+    
+    //Serial.print(currentReading); Serial.print(F("  ")); Serial.print(currentReadingMv); Serial.println(F("mv"));
+  }
+  //Serial.print(F("Took: ")); Serial.println(millis() - time);
+}
+  
+void refreshDisplay() {
+ 
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(WHITE);
+  display.setCursor(0, 1);
+
+  switch (mode) {
+    case MODE_BALANCE:
+      refreshDisplayBalance();
+      break;
+    case MODE_UNIT_OF_MEASURE:
+      refreshDisplayUnitOfMeasure();
+      break;
+    case MODE_CALIBRATION:
+      refreshDisplayCalibration();
+      break;
+    default: 
+      refreshDisplaySplash();
+      break;
+  }
+  
+  display.display();
+}
+
+void refreshDisplaySplash() {
+  Serial.println(F("Splash"));
+  /*display.setTextColor(BLACK, WHITE);
+  display.print(F("       Splash        "));
+  display.setTextColor(WHITE);*/
+  
+  display.setTextSize(2);
+  display.setCursor(16, 0);
+  display.print(F("CarbSync"));
+  display.setTextSize(3);
+  display.setCursor(29, 25);
+  display.print(F("4000"));
+  display.setTextSize(1);
+  display.setCursor(8, 56);
+  display.print(F("blog.cuyahoga.co.uk"));
+}
+
+void refreshDisplayBalance() {
+  Serial.println(F("Balance"));
+  display.setTextColor(BLACK, WHITE);
+  display.print(F("       Balance       "));
+  display.setTextColor(WHITE);
+  display.setCursor(0, 17);
+  display.print(getUomDesc());
+  display.setCursor(0, 25);
+  display.print(F("----"));
+  
+  // Determine the min, max and range of input values
+  uint8_t pLow = MAX_PRESSURE;
+  uint8_t pHigh = MIN_PRESSURE;
+  uint8_t pRange = 0;
+  for (byte sensor = 0; sensor < MAP_SENSOR_COUNT; sensor++) 
+  {
+    pLow = min(pLow, mapSensorReadingsKPa[sensor].getAvg());
+    pHigh = max(pHigh, mapSensorReadingsKPa[sensor].getAvg());
+  }
+  pRange = pHigh - pLow;
+
+  // Display each of the values relative to the current range
+  for (byte sensor = 0; sensor < MAP_SENSOR_COUNT; sensor++) {
+    renderGaugeRow(sensor, mapSensorReadingsKPa[sensor].getAvg(), pLow, pRange);
+  }
+
+  /*int mapKpa;
+  for (byte sensor = 0; sensor < MAP_SENSOR_COUNT; sensor++) { 
+    Serial.print(F("MAP Sensor: ")); Serial.print(sensor + 1); Serial.print(F("   val: ")); Serial.print(mapSensors[sensor].getCurrentReading()); Serial.print(F("  ")); Serial.print(round(mapSensors[sensor].getCurrentReadingMv())); Serial.print(F(" mV  Pressure: ")); Serial.print(mapSensors[sensor].getPressureKpa()); Serial.println(F(" kPa"));
+  }
+  Serial.println(F("------------"));*/
+  
+  /*
+  for (byte sensor = 0; sensor < MAP_SENSOR_COUNT; sensor++) { 
+    Serial.print((int)mapSensorReadings[sensor].getAvg()); Serial.print(F("  ")); 
+    Serial.print((int)mapSensorReadingsMv[sensor].getAvg()); Serial.print(F("mv  "));
+    Serial.print((int)mapSensorReadingsKPa[sensor].getAvg());Serial.println(F(" KPa"));
+  }  
+  Serial.println();
+  */
+}
+
+void refreshDisplayUnitOfMeasure() {
+  Serial.println(F("Unit Of Measure"));
+  display.setTextColor(BLACK, WHITE);
+  display.print(F("   Unit Of Measure   "));
+  display.setTextColor(WHITE);
+  
+  display.setCursor(20, 33);
+  display.setTextSize(4);
+  display.print(getUomDesc());  
+}
+
+void refreshDisplayCalibration() {
+  Serial.println(F("Calibration"));
+  display.setTextColor(BLACK, WHITE);
+  display.print(F("     Calibration     "));
+  display.setTextColor(WHITE);
+  display.setCursor(0, 17);
+  display.print(F("  Rdg  Off   Value"));
+  display.setCursor(0, 25);
+  display.print(F("  ---  ---   -----"));
+
+  byte row;
+  for (byte sensor = 0; sensor < MAP_SENSOR_COUNT; sensor++) {
+    // Map the row number to a Y co-ordinate
+    row = (sensor * 8) + 33;
+    display.setCursor(0, row);
+    display.print(sensor + 1);
+    display.setCursor(12, row);
+    display.print(mapSensorReadings[sensor].getAvg());
+    display.setCursor(43, row);
+    display.print(adjusterReadings[sensor]);
+    display.setCursor(78, row);
+    display.print(formatReadingInUom(mapSensorReadingsKPa[sensor].getAvg(), true));
+
+    //Serial.print(F("Sensor: ")); Serial.print(sensor + 1); Serial.print(F("   val: ")); Serial.print(mapSensorReadings[sensor].getAvg()); Serial.print(F("  Offset: ")); Serial.print(adjusterReadings[sensor]); Serial.print(F("  Pressure: ")); Serial.print(mapSensorReadingsKPa[sensor].getAvg()); Serial.println(F(" kPa"));
+  }
 }
 
 void renderGaugeRow(byte row, uint8_t val, uint8_t low, uint8_t range) {
   
   // Map the row number to a Y co-ordinate
-  row = (row * 8) + 1;
+  row = (row * 8) + 33;
   // Show the current value
-#if defined(SCREEN_SSD1306)
   display.setCursor(0, row);
-  display.print(val);
-#endif
-#if defined(SCREEN_ST7565)
-  sprintf(buffer, "%d", val);
-  glcd.drawString(2, row, buffer);
-#endif
+  display.print(formatReadingInUom(val, false));
+
   // Show a slider representing the current value for the row
-  uint8_t rel = map((range == 0 ? 1 : val - low), 0, (range == 0 ? 2 : range), 0, 90);
-#if defined(SCREEN_SSD1306)
-  display.fillRect(21 + rel, row, 8, 7, WHITE);
-  display.fillRect(21 + rel + 10, row, 8, 7, WHITE);
-#endif
-#if defined(SCREEN_ST7565)
-  glcd.fillRect(21 + rel, row, 8, 7, LCD_BLACK);
-  glcd.fillRect(21 + rel + 10, row, 8, 7, LCD_BLACK);
-#endif
+  uint8_t rel = map((range == 0 ? 1 : val - low), 0, (range == 0 ? 2 : range), 0, 84);
+
+  display.fillRect(27 + rel, row, 8, 7, WHITE);
+  display.fillRect(27 + rel + 10, row, 8, 7, WHITE);
+
 }
 
-void setBacklight(uint8_t r, uint8_t g, uint8_t b) {
-#if defined(SCREEN_ST7565)
-  analogWrite(PIN_RED,   r); 
-  analogWrite(PIN_GREEN, g);
-  analogWrite(PIN_BLUE,  b);
-#endif
+float convertKPaToUom(int kpa) {
+  switch(uom) {
+    case UOM_HGIN:
+      Serial.print(atmosphericKPa); Serial.print("  "); Serial.print(kpa); Serial.print("  "); Serial.println((atmosphericKPa - kpa) * 0.295301);
+      return (atmosphericKPa - kpa) * 0.295301;
+      break;
+    case UOM_PSI:
+    return kpa * 0.145037738;
+      break;
+    default:
+      return kpa;
+  }
 }
+
+int convertReadingToKPa(float reading, float vccOffset, float vccMvPerUnit, float inMinMv, float inMaxMv, int outMin, int outMax) {
+  /**
+   * Map the voltage reading from a sensor to a given value range, against a soure range compensated against supply voltage
+   *
+   * We know that the 10-bit ADC has a range of 1024 values, so when it is supplied with 5V that gives us 5000/1024 = 4.8828125 mV/ADC increment
+   * The in_min voltage represents out_min pressure and the in_max voltage represents out_max pressure
+   * We therefore map the supplied reading on the input scale and return its relative value on the output scale
+   *
+   * Worked example;
+   *  
+   * pressure = mapsensor(807, 250, 4650, 17, 117)
+   * pressure = map(807, round((250 / 4.8828125) - 1), round(4650 / 4.8828125) - 1), 17, 117)
+   * pressure = map(807, round(51.2 - 1), round(952.32 - 1), 17, 117)
+   * pressure = map(807, 50, 951, 17, 117)
+   * pressure = 101 kPa
+   */
+//  Serial.print("mapCurrentReading(");Serial.print(inMinMv);Serial.print(", ");Serial.print(inMaxMv);Serial.print(", ");Serial.print(outMin);Serial.print(", ");Serial.print(outMax);Serial.println(");");
+  return map(reading, round(((inMinMv * vccOffset) / vccMvPerUnit) - 1), round(((inMaxMv * vccOffset) / vccMvPerUnit) - 1), outMin, outMax);
+}
+
+void handleButtonAction() 
+{                
+  if ((millis() - lastButtonActionDebounceTime) > DEBOUNCE_INTERVAL) 
+  {
+    lastButtonActionDebounceTime = millis();
+    switch (mode) {
+      case MODE_BALANCE:
+        break;
+      case MODE_UNIT_OF_MEASURE:
+        // Change the current Unit Of Measure
+        if (++uom == UOM_COUNT) {
+          // Cycle back round to the first UOM
+          uom = 0;
+        }
+        break;
+      case MODE_CALIBRATION:
+        break;
+      default: 
+        break;
+    }
+  }  
+}
+
+void handleButtonMode() 
+{                
+  // Change the current mode
+  if ((millis() - lastButtonModeDebounceTime) > DEBOUNCE_INTERVAL) 
+  {
+    lastButtonModeDebounceTime = millis();
+    if (++mode == MODE_COUNT) {
+      // Cycle back round to the balance mode
+      mode = MODE_BALANCE;
+    }
+  }  
+}
+
 
